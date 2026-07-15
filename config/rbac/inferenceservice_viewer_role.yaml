@@ -1,0 +1,27 @@
+# permissions for end users to view inferenceservices.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: clusterrole
+    app.kubernetes.io/instance: inferenceservice-viewer-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: inference-operator
+    app.kubernetes.io/part-of: inference-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: inferenceservice-viewer-role
+rules:
+- apiGroups:
+  - ai.ai.example.com
+  resources:
+  - inferenceservices
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ai.ai.example.com
+  resources:
+  - inferenceservices/status
+  verbs:
+  - get

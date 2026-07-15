@@ -1,0 +1,15 @@
+apiVersion: ai.ai.example.com/v1
+kind: InferenceService
+metadata:
+  labels:
+    app.kubernetes.io/name: inferenceservice
+    app.kubernetes.io/instance: inferenceservice-sample
+    app.kubernetes.io/part-of: inference-operator
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: inference-operator
+  name: test-inference
+spec:
+  # TODO(user): Add fields here
+  modelName: sentiment-analysis
+  image: nginx:alpine
+  replicas: 1
