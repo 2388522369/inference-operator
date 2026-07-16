@@ -11,5 +11,6 @@ metadata:
 spec:
   # TODO(user): Add fields here
   modelName: sentiment-analysis
-  image: nginx:alpine
+  image: 172.17.0.1:5000/nginx:alpine
+  imagePullPolicy: IfNotPresent
   replicas: 1
