@@ -43,6 +43,8 @@ type InferenceServiceStatus struct {
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 
 	Phase string `json:"phase,omitempty"`
+
+	Healthy bool `json:"healthy,omitempty"`
 }
 
 //+kubebuilder:object:root=true

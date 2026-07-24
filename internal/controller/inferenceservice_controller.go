@@ -18,10 +18,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -70,14 +74,78 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			log.Error(err, "Failed to create Deployment")
 			return ctrl.Result{}, err
 		}
-
+		// 创建分支的最后，重新获取Deployment以拿到最新Status
+		if err := r.Get(ctx, types.NamespacedName{Name: infService.Name, Namespace: infService.Namespace}, &deploy); err != nil {
+			return ctrl.Result{}, err
+		}
 		log.Info("Deployment created sucessfully")
-	} else if err != nil {
+
+	} else if err == nil {
+		desiredDeploy := r.buildDeployment(&infService)
+
+		if *deploy.Spec.Replicas != *desiredDeploy.Spec.Replicas {
+			log.Info("Replicas changed,updating Deployment", "current", *deploy.Spec.Replicas, "desired", *desiredDeploy.Spec.Replicas)
+
+			deploy.Spec.Replicas = desiredDeploy.Spec.Replicas
+			if err := r.Update(ctx, &deploy); err != nil {
+				log.Error(err, "Failed to update Deployment")
+				return ctrl.Result{}, err
+			}
+		}
+		// 更新分支的最后，重新获取Deployment以拿到最新Status
+		if err := r.Get(ctx, types.NamespacedName{Name: infService.Name, Namespace: infService.Namespace}, &deploy); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
 		log.Error(err, "Failed to get Deployment")
 		return ctrl.Result{}, err
 	}
 
-	infService.Status.Phase = "Pending"
+	// ========== 管理 Service ==========
+	var svc corev1.Service
+	err = r.Get(ctx, types.NamespacedName{Name: infService.Name, Namespace: infService.Namespace}, &svc)
+
+	if err != nil && errors.IsNotFound(err) {
+		// Service 不存在，创建
+		desiredSvc := r.buildService(&infService)
+		if err := r.Create(ctx, desiredSvc); err != nil {
+			log.Error(err, "Failed to create Service")
+			return ctrl.Result{}, err
+		}
+	} else if err == nil {
+		// Service 已存在，此处可以简单检查是否需要更新（暂时省略）
+	} else {
+		log.Error(err, "Failed to get Service")
+		return ctrl.Result{}, err
+	}
+
+	// ========== 执行健康检查 ==========
+	// if deploy.Status.ReadyReplicas > 0 {
+	// 	healthy := r.checkHealth(&infService)
+	// 	infService.Status.Healthy = healthy
+	// 	if !healthy {
+	// 		log.Info("Health check failed")
+	// 		infService.Status.Phase = "Unhealthy"
+	// 	}
+	// }
+
+	infService.Status.ReadyReplicas = deploy.Status.ReadyReplicas
+	if deploy.Status.ReadyReplicas > 0 {
+		//healthy := r.checkHealth(&infService)
+		//infService.Status.Healthy = healthy
+		//if healthy {
+		// 	infService.Status.Phase = "Running"
+		// } else {
+		// 	infService.Status.Phase = "Unhealthy"
+		// }
+		infService.Status.Phase = "Running"
+		infService.Status.Healthy = true // 假设健康
+		log.Info("Setting Phase to Running")
+	} else {
+		infService.Status.Phase = "Pending"
+		infService.Status.Healthy = false
+		log.Info("Setting Phase to Pending")
+	}
 	if err := r.Status().Update(ctx, &infService); err != nil {
 		log.Error(err, "Failed to update status")
 		return ctrl.Result{}, err
@@ -121,6 +189,52 @@ func (r *InferenceServiceReconciler) buildDeployment(inf *aiv1.InferenceService)
 	_ = controllerutil.SetControllerReference(inf, deploy, r.Scheme)
 
 	return deploy
+}
+
+func (r *InferenceServiceReconciler) buildService(inf *aiv1.InferenceService) *corev1.Service {
+	labels := map[string]string{
+		"app":       "inference",
+		"modelName": inf.Spec.ModelName,
+	}
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      inf.Name,
+			Namespace: inf.Namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: labels,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "http",
+					Protocol:   corev1.ProtocolTCP,
+					Port:       8000,
+					TargetPort: intstr.FromInt(8000),
+				},
+			},
+		},
+	}
+
+	_ = controllerutil.SetControllerReference(inf, svc, r.Scheme)
+
+	return svc
+}
+
+func (r *InferenceServiceReconciler) checkHealth(inf *aiv1.InferenceService) bool {
+	//构造Service的访问地址：<ServiceName>.<Namespace>.svc.cluster.local
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000/health", inf.Name, inf.Namespace)
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == 200
 }
 
 // SetupWithManager sets up the controller with the Manager.

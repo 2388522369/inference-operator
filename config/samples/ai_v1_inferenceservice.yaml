@@ -7,10 +7,9 @@ metadata:
     app.kubernetes.io/part-of: inference-operator
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/created-by: inference-operator
-  name: test-inference
+  name: sentiment-service
 spec:
   # TODO(user): Add fields here
   modelName: sentiment-analysis
-  image: 172.17.0.1:5000/nginx:alpine
-  imagePullPolicy: IfNotPresent
+  image: 172.17.0.1:5000/inference-service:v1
   replicas: 1
