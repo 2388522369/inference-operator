@@ -37,6 +37,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const inferenceServiceFinalizer = "ai.ai.example.com/finalizer"
+
 // InferenceServiceReconciler reconciles a InferenceService object
 type InferenceServiceReconciler struct {
 	client.Client
@@ -62,6 +64,38 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	var infService aiv1.InferenceService
 	if err := r.Get(ctx, req.NamespacedName, &infService); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// ========== 检查 CR 是否被标记为删除  ==========
+	if infService.DeletionTimestamp != nil {
+		//如果CR上有我们的Finalizer，才需要清理
+		if controllerutil.ContainsFinalizer(&infService, inferenceServiceFinalizer) {
+			//执行清理逻辑
+			if err := r.finnalizeInferenceService(ctx, &infService); err != nil {
+				log.Error(err, "Failed to finalize InferenceService")
+				return ctrl.Result{}, err
+			}
+
+			//清理成功，移除Finalizer
+			controllerutil.RemoveFinalizer(&infService, inferenceServiceFinalizer)
+			if err := r.Update(ctx, &infService); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.Info("Finalizer removed, CR will be deleted")
+		}
+		//停止后续Reconclie，让API Server 完成删除
+		return ctrl.Result{}, nil
+	}
+
+	//如果CR没有被删除，确保Finalizer已添加
+	if !controllerutil.ContainsFinalizer(&infService, inferenceServiceFinalizer) {
+		controllerutil.AddFinalizer(&infService, inferenceServiceFinalizer)
+		if err := r.Update(ctx, &infService); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Finalizer added")
+		//返回后立即触发下一次Reconclie，避免资源还没创建
+		return ctrl.Result{}, nil
 	}
 
 	var deploy appsv1.Deployment
@@ -152,6 +186,37 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *InferenceServiceReconciler) finnalizeInferenceService(ctx context.Context, inf *aiv1.InferenceService) error {
+	log := log.FromContext(ctx)
+
+	//清理Deployment
+	var deploy appsv1.Deployment
+	err := r.Get(ctx, types.NamespacedName{Name: inf.Name, Namespace: inf.Namespace}, &deploy)
+	if err == nil {
+		log.Info("Deleting Deployment", "name", deploy.Name)
+		if err := r.Delete(ctx, &deploy); err != nil {
+			return err
+		}
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+
+	//清理Service
+	var svc corev1.Service
+	err = r.Get(ctx, types.NamespacedName{Name: inf.Name, Namespace: inf.Namespace}, &svc)
+	if err == nil {
+		log.Info("Deleting Service", "name", svc.Name)
+		if err := r.Delete(ctx, &svc); err != nil {
+			return err
+		}
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+
+	log.Info("All sub-resources cleaned up")
+	return nil
 }
 
 func (r *InferenceServiceReconciler) buildDeployment(inf *aiv1.InferenceService) *appsv1.Deployment {
