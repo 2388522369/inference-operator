@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/2388522369/inference-operator/internal/metrics"
+
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -59,10 +61,22 @@ type InferenceServiceReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.0/pkg/reconcile
 func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+
+	//记录开始时间
+	start := time.Now()
+	//增加Reconcile总次数
+	metrics.ReconcileTotal.Inc()
+
+	// defer 保证函数无论从哪个 return 退出，耗时都会被记录
+	defer func() {
+		metrics.ReconcileDuration.Observe(time.Since(start).Seconds())
+	}()
+
 	log := log.FromContext(ctx)
 
 	var infService aiv1.InferenceService
 	if err := r.Get(ctx, req.NamespacedName, &infService); err != nil {
+		metrics.ReconcileErrors.Inc()
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -72,6 +86,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if controllerutil.ContainsFinalizer(&infService, inferenceServiceFinalizer) {
 			//执行清理逻辑
 			if err := r.finnalizeInferenceService(ctx, &infService); err != nil {
+				metrics.ReconcileErrors.Inc()
 				log.Error(err, "Failed to finalize InferenceService")
 				return ctrl.Result{}, err
 			}
@@ -79,6 +94,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			//清理成功，移除Finalizer
 			controllerutil.RemoveFinalizer(&infService, inferenceServiceFinalizer)
 			if err := r.Update(ctx, &infService); err != nil {
+				metrics.ReconcileErrors.Inc()
 				return ctrl.Result{}, err
 			}
 			log.Info("Finalizer removed, CR will be deleted")
@@ -91,6 +107,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if !controllerutil.ContainsFinalizer(&infService, inferenceServiceFinalizer) {
 		controllerutil.AddFinalizer(&infService, inferenceServiceFinalizer)
 		if err := r.Update(ctx, &infService); err != nil {
+			metrics.ReconcileErrors.Inc()
 			return ctrl.Result{}, err
 		}
 		log.Info("Finalizer added")
@@ -105,11 +122,13 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 		desiredDeploy := r.buildDeployment(&infService)
 		if err := r.Create(ctx, desiredDeploy); err != nil {
+			metrics.ReconcileErrors.Inc()
 			log.Error(err, "Failed to create Deployment")
 			return ctrl.Result{}, err
 		}
 		// 创建分支的最后，重新获取Deployment以拿到最新Status
 		if err := r.Get(ctx, types.NamespacedName{Name: infService.Name, Namespace: infService.Namespace}, &deploy); err != nil {
+			metrics.ReconcileErrors.Inc()
 			return ctrl.Result{}, err
 		}
 		log.Info("Deployment created sucessfully")
@@ -122,15 +141,18 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 			deploy.Spec.Replicas = desiredDeploy.Spec.Replicas
 			if err := r.Update(ctx, &deploy); err != nil {
+				metrics.ReconcileErrors.Inc()
 				log.Error(err, "Failed to update Deployment")
 				return ctrl.Result{}, err
 			}
 		}
 		// 更新分支的最后，重新获取Deployment以拿到最新Status
 		if err := r.Get(ctx, types.NamespacedName{Name: infService.Name, Namespace: infService.Namespace}, &deploy); err != nil {
+			metrics.ReconcileErrors.Inc()
 			return ctrl.Result{}, err
 		}
 	} else {
+		metrics.ReconcileErrors.Inc()
 		log.Error(err, "Failed to get Deployment")
 		return ctrl.Result{}, err
 	}
@@ -143,12 +165,14 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		// Service 不存在，创建
 		desiredSvc := r.buildService(&infService)
 		if err := r.Create(ctx, desiredSvc); err != nil {
+			metrics.ReconcileErrors.Inc()
 			log.Error(err, "Failed to create Service")
 			return ctrl.Result{}, err
 		}
 	} else if err == nil {
 		// Service 已存在，此处可以简单检查是否需要更新（暂时省略）
 	} else {
+		metrics.ReconcileErrors.Inc()
 		log.Error(err, "Failed to get Service")
 		return ctrl.Result{}, err
 	}
@@ -181,6 +205,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		log.Info("Setting Phase to Pending")
 	}
 	if err := r.Status().Update(ctx, &infService); err != nil {
+		metrics.ReconcileErrors.Inc()
 		log.Error(err, "Failed to update status")
 		return ctrl.Result{}, err
 	}
