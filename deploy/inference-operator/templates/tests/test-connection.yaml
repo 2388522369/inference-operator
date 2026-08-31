@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "inference-operator.fullname" . }}-test-connection"
+  labels:
+    {{- include "inference-operator.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['{{ include "inference-operator.fullname" . }}:{{ .Values.service.port }}']
+  restartPolicy: Never
