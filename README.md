@@ -85,3 +85,36 @@ curl http://localhost:8000/health
 2. 解决集群外 Operator 无法访问 Service 的本地开发问题，提出基于就绪副本数的轻量方案
 3. 推理服务镜像离线可用，模型文件直接打包，无需运行时下载
 4. 代码注释完整，具备生产级项目的错误处理和日志规范
+
+## 补充
+### 1.kind-config.yaml
+由于网络原因容器无法从Docker Hub上拉取镜像，因此我把推理服务镜像打包发送到了本地仓库，但是创建的Kind 节点的 containerd 默认会拒绝从 HTTP 仓库拉取，因此在创建集群时要带上信任本地仓库的配置文件kind-config.yaml。
+``` yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."172.17.0.1:5000"]
+    endpoint = ["http://172.17.0.1:5000"]
+```
+``` bash
+# 用新配置重建
+kind create cluster --name ai-infra --config kind-config.yaml
+```
+### 2.port-forward
+由于Opeartor未运行在集群内部，所以在访问集群内部服务时需转发端口实现访问。在本地开一个隧道，把 localhost:8080 的流量通过 API Server 转发到集群里的 Pod 或 Service。它绕过了 ClusterIP 不可达的问题，因为流量走的是 kubectl → API Server → Pod
+
+获取pod name：
+``` bash
+kubectl get pods -l app=inference
+```
+转发端口：
+``` bash
+kubectl port-forward service/<pod name> 8080:8000
+```
+然后访问：
+``` bash
+curl -X POST http://localhost:8080/predict \
+  -H "Content-Type: application/json" \
+  -d '{"text": "I love this"}'
+```
